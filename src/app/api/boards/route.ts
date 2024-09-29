@@ -9,9 +9,11 @@ const prisma = new PrismaClient();
 export async function POST(req: Request) {
   try {
     const session = await getServerSession(authOptions);
+    
     if (!session || !session.user?.email) {
       return NextResponse.json({ error: '인증되지 않은 사용자입니다.' }, { status: 401 });
     }
+    
 
     const { title } = await req.json();
 

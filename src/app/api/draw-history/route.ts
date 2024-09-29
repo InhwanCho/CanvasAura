@@ -13,6 +13,16 @@ export async function POST(req: Request) {
     }
 
     const { boardId, path, color, userId } = await req.json();
+    console.log(userId);
+
+    // userId가 유효한지 확인
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      return NextResponse.json({ error: '유효하지 않은 사용자입니다.' }, { status: 400 });
+    }
 
     const drawHistory = await prisma.drawHistory.create({
       data: {
@@ -26,29 +36,6 @@ export async function POST(req: Request) {
     return NextResponse.json(drawHistory);
   } catch (error) {
     console.error('그림 저장 오류:', error);
-    return NextResponse.json({ error: '서버 오류가 발생했습니다.' }, { status: 500 });
-  } finally {
-    await prisma.$disconnect();
-  }
-}
-
-export async function GET(req: Request) {
-  try {
-    const { searchParams } = new URL(req.url);
-    const boardId = searchParams.get('boardId');
-
-    if (!boardId) {
-      return NextResponse.json({ error: 'boardId가 필요합니다.' }, { status: 400 });
-    }
-
-    const drawHistory = await prisma.drawHistory.findMany({
-      where: { boardId },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    return NextResponse.json(drawHistory);
-  } catch (error) {
-    console.error('그림 히스토리 로딩 오류:', error);
     return NextResponse.json({ error: '서버 오류가 발생했습니다.' }, { status: 500 });
   } finally {
     await prisma.$disconnect();

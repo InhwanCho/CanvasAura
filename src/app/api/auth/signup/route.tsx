@@ -23,6 +23,7 @@ export async function POST(req: Request) {
     if (existingUser) {
       return new Response(JSON.stringify({ message: "이미 존재하는 이메일입니다." }), { status: 400 });
     }
+    
 
     // 랜덤 이미지 선택
     const charactersDir = path.join(process.cwd(), 'public', 'characters');

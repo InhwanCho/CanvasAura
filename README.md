@@ -1,6 +1,8 @@
 # CanvasAura
 
-Nextjs, Prisma, Socket.io, TailwindCSS, Shadcn/UI
+Nextjs, Prisma, Socket, TailwindCSS, Shadcn/UI
+
+- [백엔드 서버](https://github.com/InhwanCho/CanvasAuraBackend '백엔드 서버')
 
 ## Features
 
