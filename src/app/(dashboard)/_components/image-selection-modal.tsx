@@ -1,27 +1,17 @@
 /* eslint-disable @next/next/no-img-element */
+'use client'
 import { useState } from "react";
-import ConfirmModal from "@/components/confirm-modal";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { images } from "@/config/images";
 
 interface ImageSelectionModalProps {
-  onSelect: (imageUrl: string) => void;
+  isOpen: boolean;
   onClose: () => void;
+  onSelect: (imageUrl: string) => void;
 }
 
-const images = [
-  "/characters/anonymous.png",
-  "/characters/m2.png",
-  "/characters/m3.png",
-  "/characters/m4.png",
-  "/characters/m5.png",
-  "/characters/m1.png",
-  "/characters/w1.png",
-  "/characters/w2.png",
-  "/characters/w3.png",
-  "/characters/w4.png",
-  "/characters/w5.png",
-];
-
-export default function ImageSelectionModal({ onSelect, onClose }: ImageSelectionModalProps) {
+export default function ImageSelectionModal({ isOpen, onClose, onSelect }: ImageSelectionModalProps) {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
 
   const handleConfirm = () => {
@@ -31,32 +21,30 @@ export default function ImageSelectionModal({ onSelect, onClose }: ImageSelectio
     }
   };
 
-  const handleCancel = () => {
-    onClose();
-  };
-
   return (
-    <ConfirmModal
-      header="이미지 선택"
-      onConfirm={handleConfirm}
-    >      
-      <div>
-        <div className="grid grid-cols-3 gap-4">
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-[425px]">
+        <DialogHeader>
+          <DialogTitle>프로필 이미지 선택</DialogTitle>
+        </DialogHeader>
+        <div className="grid grid-cols-3 gap-4 py-4">
           {images.map((image) => (
             <img
               key={image}
               src={image}
               alt="character"
-              className={`cursor-pointer ${selectedImage === image ? 'border-2 border-blue-500' : ''}`}
+              className={`cursor-pointer w-20 h-20 object-cover rounded-full ${
+                selectedImage === image ? 'border-4 border-slate-300/90' : ''
+              }`}
               onClick={() => setSelectedImage(image)}
             />
           ))}
         </div>
-        <div className="flex justify-end mt-4">
-          <button onClick={handleCancel} className="mr-2">취소</button>
-          <button onClick={handleConfirm} className="bg-blue-500 text-white px-4 py-2 rounded">확인</button>
-        </div>
-      </div>
-    </ConfirmModal>
+        <DialogFooter>
+          <Button onClick={onClose} variant="outline">취소</Button>
+          <Button onClick={handleConfirm} disabled={!selectedImage}>선택 완료</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

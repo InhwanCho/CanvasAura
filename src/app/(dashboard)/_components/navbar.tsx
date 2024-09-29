@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 'use client'
-import { useState } from "react";
 import { useSession, signOut } from "next-auth/react";
+import { useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -25,9 +25,30 @@ export function Navbar() {
 
   const handleImageSelect = async (imageUrl: string) => {
     try {
-      console.log('session', session);
-      console.log('imageUrl', imageUrl);
-      await update({ ...session, user: { ...session?.user, imageUrl: imageUrl } });
+      const response = await fetch('/api/user/update-image', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ imageUrl }),
+      });
+  
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '이미지 업데이트에 실패했습니다.');
+      }
+  
+      const data = await response.json();
+      console.log('서버 응답:', data);
+  
+      // 새로운 JWT 저장
+      if (data.token) {
+        localStorage.setItem('jwt', data.token);
+      }
+  
+      // 세션 업데이트
+      await update();
+  
       toast.success('프로필 이미지가 업데이트되었습니다.');
     } catch (error) {
       console.error('이미지 업데이트 오류:', error);
@@ -47,14 +68,26 @@ export function Navbar() {
               CanvasAura
             </span>
           </div>
-        </Link>
+        </Link>        
         <SearchInput />
-        {session ? (
+        {session?.user ? (
           <div className="flex items-center gap-4">
-            {session.user?.image && (
+            {(session.user?.image || localStorage.getItem('jwt')) && (
               <img
-                src={session.user?.image}
-                alt="user"
+                src={(() => {
+                  const jwt = localStorage.getItem('jwt');
+                  if (jwt) {
+                    try {
+                      const payload = JSON.parse(atob(jwt.split('.')[1]));
+                      return payload.image || session.user?.image;
+                    } catch (error) {
+                      console.error('JWT 디코딩 오류:', error);
+                      return session.user?.image;
+                    }
+                  }
+                  return session.user?.image;
+                })()}
+                alt="사용자"
                 height={45}
                 width={45}
                 className="rounded-full border-[1.5px] border-gray-300 cursor-pointer"
@@ -71,9 +104,11 @@ export function Navbar() {
           </Link>
         )}
       </div>
-      {isImageModalOpen && (
-        <ImageSelectionModal onSelect={handleImageSelect} onClose={() => setIsImageModalOpen(false)} />
-      )}
+      <ImageSelectionModal 
+        isOpen={isImageModalOpen}
+        onClose={() => setIsImageModalOpen(false)}
+        onSelect={handleImageSelect}
+      />
     </header>
   );
 }

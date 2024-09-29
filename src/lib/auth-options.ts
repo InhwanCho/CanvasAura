@@ -35,7 +35,7 @@ export const authOptions: NextAuthOptions = {
           throw new Error("비밀번호가 일치하지 않습니다.");
         }
         return {
-          id: user.id + "",
+          id: user.id,
           email: user.email,
           name: user.name,
           image: user.imageUrl,
@@ -43,6 +43,7 @@ export const authOptions: NextAuthOptions = {
       },
     }),
   ],
+  secret: process.env.NEXTAUTH_SECRET,
   session: {
     strategy: "jwt",
   },
@@ -51,11 +52,23 @@ export const authOptions: NextAuthOptions = {
   },
   callbacks: {
     async jwt({ token, user }) {
-      if (user && "imageUrl" in user) {
+      if (user) {
         token.id = user.id;
-        token.imageUrl = user.imageUrl;
+      }
+      const dbUser = await prisma.user.findUnique({
+        where: { id: token.id as string },
+      });
+      if (dbUser) {
+        token.id = dbUser.id;
+        token.name = dbUser.name;
+        token.email = dbUser.email;
+        token.image = dbUser.imageUrl;
       }
       return token;
+    },
+    session: ({ session, token }) => {
+      session.user.id = token.id as string; 
+      return session;
     },
   },
 };

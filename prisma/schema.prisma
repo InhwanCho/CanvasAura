@@ -8,13 +8,14 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  name      String?
-  email     String   @unique
-  password  String
-  imageUrl  String   @default("/characters/anonymous.png")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String        @id @default(cuid())
+  name        String?
+  email       String        @unique
+  password    String
+  imageUrl    String        @default("/characters/anonymous.png")
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  DrawHistory DrawHistory[]
 }
 
 model board {
@@ -27,6 +28,7 @@ model board {
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
   userfavorite userfavorite[]
+  DrawHistory  DrawHistory[]
 }
 
 model userfavorite {
@@ -40,3 +42,13 @@ model userfavorite {
   @@index([boardId], map: "UserFavorite_boardId_fkey")
 }
 
+model DrawHistory {
+  id        String   @id @default(cuid())
+  boardId   String
+  userId    String
+  path      String   @db.Text
+  color     String
+  createdAt DateTime @default(now())
+  board     board    @relation(fields: [boardId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+}
