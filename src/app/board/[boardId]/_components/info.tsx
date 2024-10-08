@@ -24,7 +24,7 @@ const TabSeparator = () => {
   )
 }
 
-export function Info({ boardId }: InfoProps) {
+export default function Info({ boardId }: InfoProps) {
   const [data, setData] = useState<{ id: string, title: string } | null>(null);  
 
   useEffect(() => {

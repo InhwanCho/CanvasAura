@@ -94,6 +94,7 @@ export function Navbar() {
                 onClick={handleImageClick}
               />
             )}
+            <p>{session.user?.email}</p>
             <ConfirmModal header="정말로 로그아웃 하시겠습니까?" onConfirm={handleSignOut}>
               <Button variant="outline">로그아웃</Button>
             </ConfirmModal>

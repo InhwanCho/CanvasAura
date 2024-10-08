@@ -1,128 +1,253 @@
-'use client';
+'use client'
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Info } from './_components/info';
-import Participants from './_components/participants';
-import { useParams } from 'next/navigation';
-import Toolbar from './_components/toolbar';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { SketchPicker } from 'react-color';
+import { useParams, useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
+import Info from './_components/info';
+import Participants from './_components/participants';
+import Toolbar from './_components/toolbar';
+import { toast } from 'sonner';
 
-interface Point {
-  x: number;
-  y: number;
-}
-
-interface DrawHistory {
+export interface DrawHistory {
+  id: string;
   path: string;
   color: string;
+  boardId: string;
   userId: string;
+  createdAt: Date;
 }
 
+export type Camera = {
+  x: number;
+  y: number;
+};
+
 export default function BoardPage() {
+  const { data: session, status } = useSession();
   const params = useParams();
-  const [userId, setUserId] = useState<string>('');
-  const [color, setColor] = useState<string>('#000');
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [path, setPath] = useState<string>('');
-  const [canvasState, setCanvasState] = useState<'select' | 'draw'>('select');
+  const router = useRouter();
+  const [userDrawHistories, setUserDrawHistories] = useState<Record<string, DrawHistory[]>>({});
+  const [redoHistories, setRedoHistories] = useState<Record<string, DrawHistory[]>>({});
   const [drawHistory, setDrawHistory] = useState<DrawHistory[]>([]);
-  const [userDrawHistory, setUserDrawHistory] = useState<DrawHistory[]>([]);
-  const [redoHistory, setRedoHistory] = useState<DrawHistory[]>([]);
-  const svgRef = useRef<SVGSVGElement>(null);
+  const [canvasState, setCanvasState] = useState<'select' | 'draw'>('draw');
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [path, setPath] = useState('');
+  const [color, setColor] = useState('#000000');
+  const [camera, setCamera] = useState<Camera>({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false); // 화면 이동 상태 관리
+  const svgRef = useRef<SVGSVGElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const userId = session?.user?.id;
 
   useEffect(() => {
+    if (status === 'loading') return;
+
+    if (!session) {
+      toast.info('로그인이 필요합니다.');
+      router.push('/');
+      return;
+    }
+
+    if (!params.boardId) return;
+
     const socket: Socket = io('http://localhost:3001', {
       query: { boardId: params.boardId }
     });
     socketRef.current = socket;
 
-    socket.emit('client-ready', params.boardId);
-    // 사용자 ID 생성 및 설정
-    const generatedUserId = Math.random().toString(36).substr(2, 9);
-    setUserId(generatedUserId);
+    // 서버로부터 초기 그리기 기록 불러오기
+    fetch(`/api/boards/${params.boardId}`)
+      .then(response => response.json())
+      .then(data => {
+        setDrawHistory(data.drawHistory); // 서버가 보낸 drawHistory를 설정
+      })
+      .catch(error => {
+        console.error('그리기 기록 불러오기 실패:', error);
+      });
 
-    socket.on('get-canvas-state', () => {
-      socket.emit('canvas-state', drawHistory);
-    });
+    socket.emit('join-board', { boardId: params.boardId, userId });
 
     socket.on('canvas-state-from-server', (state: DrawHistory[]) => {
+      console.log("서버로부터 받은 보드 상태:", state);
       setDrawHistory(state);
     });
 
-    socket.on('draw-line', ({ prevPoint, currentPoint, color, userId: drawUserId }) => {
-      setDrawHistory(prev => [...prev, { path: `M ${prevPoint.x} ${prevPoint.y} L ${currentPoint.x} ${currentPoint.y}`, color, userId: drawUserId }]);
-    });
-
-    socket.on('clear', () => {
-      setDrawHistory([]);
-      setUserDrawHistory([]);
-      setRedoHistory([]);
-    });
-
     return () => {
+      socket.off('canvas-state-from-server');
       socket.disconnect();
     };
-  }, [params.boardId]);
+  }, [session, status, userId, params.boardId, router]);
 
-  const startDrawing = useCallback((event: React.MouseEvent<SVGSVGElement>) => {
-    if (canvasState !== 'draw') return;
-    const point = getMousePosition(event);
-    setPath(`M ${point.x} ${point.y}`);
-    setIsDrawing(true);
-  }, [canvasState]);
+  const getCurrentUserDrawHistory = useCallback(() => {
+    if (!userId) return [];
+    return userDrawHistories[userId] || [];
+  }, [userId, userDrawHistories]);
 
-  const draw = useCallback((event: React.MouseEvent<SVGSVGElement>) => {
-    if (!isDrawing || canvasState !== 'draw') return;
-    const point = getMousePosition(event);
-    setPath(prevPath => `${prevPath} L ${point.x} ${point.y}`);
-    socketRef.current?.emit('draw-line', { prevPoint: getMousePosition(event), currentPoint: point, color, userId });
-  }, [isDrawing, canvasState, color, userId]);
-
-  const stopDrawing = useCallback(() => {
-    if (isDrawing && path) {
-      const newDraw = { path, color, userId };
-      setDrawHistory(prev => [...prev, newDraw]);
-      setUserDrawHistory(prev => [...prev, newDraw]);
-      setRedoHistory([]);
-      socketRef.current?.emit('canvas-state', [...drawHistory, newDraw]);
-    }
-    setIsDrawing(false);
-  }, [isDrawing, path, color, userId, drawHistory]);
-
-  const getMousePosition = (event: React.MouseEvent<SVGSVGElement>): Point => {
-    const svg = svgRef.current;
-    if (!svg) return { x: 0, y: 0 };
-    const CTM = svg.getScreenCTM();
-    if (!CTM) return { x: 0, y: 0 };
-    return {
-      x: (event.clientX - CTM.e) / CTM.a,
-      y: (event.clientY - CTM.f) / CTM.d
-    };
-  };
+  const getCurrentRedoHistory = useCallback(() => {
+    if (!userId) return [];
+    return redoHistories[userId] || [];
+  }, [userId, redoHistories]);
 
   const undo = useCallback(() => {
-    if (userDrawHistory.length === 0) return;
-    const lastDraw = userDrawHistory[userDrawHistory.length - 1];
-    const newUserDrawHistory = userDrawHistory.slice(0, -1);
-    setUserDrawHistory(newUserDrawHistory);
-    setRedoHistory(prev => [...prev, lastDraw]);
+    if (!userId) return;
+    const currentUserDrawHistory = getCurrentUserDrawHistory();
+    if (currentUserDrawHistory.length === 0) return;
+    const lastDraw = currentUserDrawHistory[currentUserDrawHistory.length - 1];
+    const newUserDrawHistory = currentUserDrawHistory.slice(0, -1);
 
-    const newDrawHistory = drawHistory.filter(draw => !(draw.userId === userId && draw === lastDraw));
-    setDrawHistory(newDrawHistory);
-    socketRef.current?.emit('undo', { newDrawHistory, userId });
-  }, [userDrawHistory, drawHistory, userId]);
+    setUserDrawHistories(prev => ({
+      ...prev,
+      [userId]: newUserDrawHistory
+    }));
+    setRedoHistories(prev => ({
+      ...prev,
+      [userId]: [...getCurrentRedoHistory(), lastDraw]
+    }));
+
+    // 서버에 해당 기록 삭제 요청 (UUID 기반 id 사용)
+    fetch(`/api/boards/${params.boardId}/drawings/${lastDraw.id}`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    })
+      .then(response => {
+        if (!response.ok) {
+          console.error('그리기 기록 삭제 실패:', response.statusText);
+        }
+      })
+      .catch(error => {
+        console.error('그리기 기록 삭제 실패:', error);
+      });
+
+    if (socketRef.current) {
+      socketRef.current.emit('undo', { boardId: params.boardId, userId });
+    }
+  }, [userId, getCurrentUserDrawHistory, getCurrentRedoHistory, params.boardId]);
 
   const redo = useCallback(() => {
-    if (redoHistory.length === 0) return;
-    const lastRedo = redoHistory[redoHistory.length - 1];
-    const newRedoHistory = redoHistory.slice(0, -1);
-    setRedoHistory(newRedoHistory);
-    setUserDrawHistory(prev => [...prev, lastRedo]);
-    setDrawHistory(prev => [...prev, lastRedo]);
-    socketRef.current?.emit('redo', { newDrawHistory: [...drawHistory, lastRedo], userId });
-  }, [redoHistory, drawHistory, userId]);
+    if (!userId) return;
+    const currentRedoHistory = getCurrentRedoHistory();
+    if (currentRedoHistory.length === 0) return;
+    const lastRedo = currentRedoHistory[currentRedoHistory.length - 1];
+    const newRedoHistory = currentRedoHistory.slice(0, -1);
+
+    setRedoHistories(prev => ({
+      ...prev,
+      [userId]: newRedoHistory
+    }));
+    setUserDrawHistories(prev => ({
+      ...prev,
+      [userId]: [...getCurrentUserDrawHistory(), lastRedo]
+    }));
+
+    if (socketRef.current) {
+      socketRef.current.emit('redo', { boardId: params.boardId, userId });
+    }
+  }, [userId, getCurrentRedoHistory, getCurrentUserDrawHistory, params.boardId]);
+
+  const startDrawing = (event: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
+    if (canvasState === 'select') return;
+    setIsDrawing(true);
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    const transformedPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
+
+    setPath(`M ${transformedPoint.x} ${transformedPoint.y}`);
+  };
+
+  const stopDrawing = () => {
+    if (canvasState === 'select' || !isDrawing || !userId) return;
+    if (path) {
+      const newDraw = {
+        path,
+        color,
+        boardId: params.boardId as string,
+        userId,
+        createdAt: new Date()
+      };
+
+      // 서버에 그리기 기록 저장
+      fetch(`/api/boards/${params.boardId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(newDraw),
+      })
+        .then(response => response.json())
+        .then(data => {
+          // 서버로부터 받은 UUID 기반 id 사용
+          const newDrawWithId = { ...newDraw, id: data.id };
+
+          setUserDrawHistories(prev => ({
+            ...prev,
+            [userId]: [...getCurrentUserDrawHistory(), newDrawWithId]
+          }));
+          setDrawHistory(prev => [...prev, newDrawWithId]);
+        })
+        .catch(error => {
+          console.error('그리기 기록 저장 실패:', error);
+        });
+
+      if (socketRef.current) {
+        socketRef.current.emit('draw', { boardId: params.boardId, userId, path, color });
+      }
+      setPath('');
+    }
+    setIsDrawing(false);
+  };
+
+
+  const draw = (event: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
+    if (canvasState === 'select' || !isDrawing) return;
+
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    const transformedPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
+
+    setPath(prevPath => `${prevPath} L ${transformedPoint.x} ${transformedPoint.y}`);
+  };
+
+  // 두 손가락으로 스크롤(이동) 또는 마우스 휠로 이동
+  const onWheel = useCallback((e: React.WheelEvent) => {
+    const smoothFactor = 0.5; // 이동을 더 부드럽게 하기 위한 배율
+    setCamera((camera) => ({
+      x: camera.x + e.deltaX * smoothFactor, // 좌우 이동 방향 수정
+      y: camera.y + e.deltaY * smoothFactor  // 상하 이동
+    }));
+  }, []);
+
+  // 마우스 이동에 대한 동작 설정 (드로잉 중일 때는 동작하지 않음)
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (isPanning && !isDrawing) {
+      const smoothFactor = 0.3; // 부드러운 이동을 위한 감속 배율
+      setCamera((camera) => ({
+        ...camera,
+        x: camera.x - e.movementX * smoothFactor,  // 좌우 이동 방향 수정
+        y: camera.y - e.movementY * smoothFactor   // 상하 이동
+      }));
+    }
+  }, [isPanning, isDrawing]);
+
+  // 마우스 클릭 및 터치 시작 시
+  const handlePointerDown = useCallback(() => {
+    setIsPanning(true);
+  }, []);
+
+  // 마우스 클릭 및 터치 종료 시
+  const handlePointerUp = useCallback(() => {
+    setIsPanning(false);
+  }, []);
 
   return (
     <main className="h-screen w-full relative bg-neutral-100 touch-none">
@@ -133,22 +258,21 @@ export default function BoardPage() {
         setCanvasState={setCanvasState}
         undo={undo}
         redo={redo}
-        canUndo={userDrawHistory.length > 0}
-        canRedo={redoHistory.length > 0}
+        canUndo={getCurrentUserDrawHistory().length > 0}
+        canRedo={getCurrentRedoHistory().length > 0}
       />
-      {/* <div className="absolute top-2 left-2">
-        <SketchPicker
-          color={color}
-          onChangeComplete={(color) => setColor(color.hex)}
-        />
-      </div> */}
       <svg
         ref={svgRef}
-        className='h-full w-full'
+        className="h-full w-full"
         onMouseDown={startDrawing}
         onMouseMove={draw}
         onMouseUp={stopDrawing}
-        onMouseLeave={stopDrawing}
+        onMouseLeave={handlePointerUp} // 마우스가 캔버스를 벗어났을 때 이동 멈춤
+        onWheel={onWheel} // 휠 스크롤로 화면 이동
+        viewBox={`${camera.x} ${camera.y} 1200 1200`}
+        onPointerMove={handlePointerMove}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
       >
         {drawHistory.map((draw, index) => (
           <path key={index} d={draw.path} stroke={draw.color} strokeWidth="2" fill="none" />
