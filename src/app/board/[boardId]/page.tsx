@@ -1,4 +1,4 @@
-'use client'
+'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
@@ -56,6 +56,8 @@ export default function BoardPage() {
     });
     socketRef.current = socket;
 
+    
+
     // 서버로부터 초기 그리기 기록 불러오기
     fetch(`/api/boards/${params.boardId}`)
       .then(response => response.json())
@@ -79,19 +81,17 @@ export default function BoardPage() {
     };
   }, [session, status, userId, params.boardId, router]);
 
-  const getCurrentUserDrawHistory = useCallback(() => {
-    if (!userId) return [];
-    return userDrawHistories[userId] || [];
-  }, [userId, userDrawHistories]);
-
-  const getCurrentRedoHistory = useCallback(() => {
-    if (!userId) return [];
-    return redoHistories[userId] || [];
-  }, [userId, redoHistories]);
+  const getUserHistory = useCallback(
+    (histories: Record<string, DrawHistory[]>, userId?: string) => {
+      if (!userId) return [];
+      return histories[userId] || [];
+    },
+    []
+  );
 
   const undo = useCallback(() => {
     if (!userId) return;
-    const currentUserDrawHistory = getCurrentUserDrawHistory();
+    const currentUserDrawHistory = getUserHistory(userDrawHistories, userId);
     if (currentUserDrawHistory.length === 0) return;
     const lastDraw = currentUserDrawHistory[currentUserDrawHistory.length - 1];
     const newUserDrawHistory = currentUserDrawHistory.slice(0, -1);
@@ -102,7 +102,7 @@ export default function BoardPage() {
     }));
     setRedoHistories(prev => ({
       ...prev,
-      [userId]: [...getCurrentRedoHistory(), lastDraw]
+      [userId]: [...getUserHistory(redoHistories, userId), lastDraw]
     }));
 
     // 서버에 해당 기록 삭제 요청 (UUID 기반 id 사용)
@@ -124,11 +124,11 @@ export default function BoardPage() {
     if (socketRef.current) {
       socketRef.current.emit('undo', { boardId: params.boardId, userId });
     }
-  }, [userId, getCurrentUserDrawHistory, getCurrentRedoHistory, params.boardId]);
+  }, [userId, getUserHistory, params.boardId, userDrawHistories, redoHistories]);
 
   const redo = useCallback(() => {
     if (!userId) return;
-    const currentRedoHistory = getCurrentRedoHistory();
+    const currentRedoHistory = getUserHistory(redoHistories, userId);
     if (currentRedoHistory.length === 0) return;
     const lastRedo = currentRedoHistory[currentRedoHistory.length - 1];
     const newRedoHistory = currentRedoHistory.slice(0, -1);
@@ -139,13 +139,13 @@ export default function BoardPage() {
     }));
     setUserDrawHistories(prev => ({
       ...prev,
-      [userId]: [...getCurrentUserDrawHistory(), lastRedo]
+      [userId]: [...getUserHistory(userDrawHistories, userId), lastRedo]
     }));
 
     if (socketRef.current) {
       socketRef.current.emit('redo', { boardId: params.boardId, userId });
     }
-  }, [userId, getCurrentRedoHistory, getCurrentUserDrawHistory, params.boardId]);
+  }, [userId, getUserHistory, params.boardId, userDrawHistories, redoHistories]);
 
   const startDrawing = (event: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
     if (canvasState === 'select') return;
@@ -187,7 +187,7 @@ export default function BoardPage() {
 
           setUserDrawHistories(prev => ({
             ...prev,
-            [userId]: [...getCurrentUserDrawHistory(), newDrawWithId]
+            [userId]: [...getUserHistory(userDrawHistories, userId), newDrawWithId]
           }));
           setDrawHistory(prev => [...prev, newDrawWithId]);
         })
@@ -202,7 +202,6 @@ export default function BoardPage() {
     }
     setIsDrawing(false);
   };
-
 
   const draw = (event: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
     if (canvasState === 'select' || !isDrawing) return;
@@ -258,8 +257,8 @@ export default function BoardPage() {
         setCanvasState={setCanvasState}
         undo={undo}
         redo={redo}
-        canUndo={getCurrentUserDrawHistory().length > 0}
-        canRedo={getCurrentRedoHistory().length > 0}
+        canUndo={getUserHistory(userDrawHistories, userId).length > 0}
+        canRedo={getUserHistory(redoHistories, userId).length > 0}
       />
       <svg
         ref={svgRef}
