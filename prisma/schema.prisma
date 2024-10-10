@@ -46,9 +46,10 @@ model DrawHistory {
   id        String   @id @default(cuid())
   boardId   String
   userId    String
-  path      String   @db.Text
+  path      Json     // 좌표 배열을 저장할 JSON 필드
   color     String
   createdAt DateTime @default(now())
+  bounds    Json     // x, y, width, height 값을 포함하는 JSON 객체
   board     board    @relation(fields: [boardId], references: [id])
   user      User     @relation(fields: [userId], references: [id])
 }

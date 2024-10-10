@@ -1,10 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
-import { PrismaClient } from '@prisma/client';
 import { authOptions } from '@/lib/auth-options';
 import { v4 as uuidv4 } from 'uuid';
-
-const prisma = new PrismaClient();
+import { prisma } from '@/lib/prisma';
 
 export async function POST(req: Request) {
   try {
@@ -13,7 +11,6 @@ export async function POST(req: Request) {
     if (!session || !session.user?.email) {
       return NextResponse.json({ error: '인증되지 않은 사용자입니다.' }, { status: 401 });
     }
-    
 
     const { title } = await req.json();
 
@@ -46,5 +43,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: '서버 오류가 발생했습니다.' }, { status: 500 });
   } finally {
     await prisma.$disconnect();
+  }
+}
+
+export async function GET(req: Request, { params }: { params: { boardId: string } }) {
+  try {
+    const drawHistory = await prisma.drawHistory.findMany({
+      where: { boardId: params.boardId },
+    });
+    return NextResponse.json(drawHistory);
+  } catch (error) {
+    console.error("그리기 기록 불러오기 오류:", error);
+    return NextResponse.json({ error: "서버 오류가 발생했습니다." }, { status: 500 });
   }
 }
