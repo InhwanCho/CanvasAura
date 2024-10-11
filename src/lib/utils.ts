@@ -1,3 +1,4 @@
+import { Camera } from "@/app/board/[boardId]/page";
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 
@@ -24,4 +25,15 @@ export function validatePassword(password: string): string | null {
     return "비밀번호에는 최소 하나의 숫자가 포함되어야 합니다.";
   }
   return null;
+}
+
+
+export function pointerEventToCanvasPoint(
+  e: React.PointerEvent,
+  camera: Camera
+) {
+  return {
+    x: Math.round(e.clientX) - camera.x,
+    y: Math.round(e.clientY) - camera.y,
+  };
 }

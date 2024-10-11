@@ -9,6 +9,8 @@ import Participants from './_components/participants';
 import Toolbar from './_components/toolbar';
 import { toast } from 'sonner';
 import { Session } from 'next-auth';
+import { Point, Side, XYWH } from '@/types/draw-types';
+import { SelectionBox } from './_components/selection-box';
 
 export interface PathPoint {
   x: number;
@@ -37,6 +39,13 @@ export enum CanvasMode {
   Pencil,
   Resizing,
   Inserting,
+  SelectionNet,
+}
+
+export interface CanvasState {
+  mode: CanvasMode;
+  origin?: Point;    // 선택 모드에서 드래그 시작점
+  current?: Point;   // 선택 모드에서 드래그 중인 현재 좌표
 }
 
 export default function BoardPage() {
@@ -47,14 +56,15 @@ export default function BoardPage() {
   const [drawHistory, setDrawHistory] = useState<DrawHistory[]>([]);
   const [userDrawHistory, setUserDrawHistory] = useState<{ [userId: string]: DrawHistory[] }>({});
   const [userRedoHistory, setUserRedoHistory] = useState<{ [userId: string]: DrawHistory[] }>({});
-  const [canvasState, setCanvasState] = useState<CanvasMode>(CanvasMode.None);
+  const [canvasState, setCanvasState] = useState<CanvasState>({ mode: CanvasMode.None });
   const [path, setPath] = useState<PathPoint[]>([]);
   const [isDrawing, setIsDrawing] = useState(false);
   const [color, setColor] = useState('#000000');
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0 });
-  const [selectedLayer, setSelectedLayer] = useState<DrawHistory | null>(null); // 선택한 레이어
   const svgRef = useRef<SVGSVGElement | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
+
 
   useEffect(() => {
     if (status === 'loading') return;
@@ -102,6 +112,12 @@ export default function BoardPage() {
     setUserRedoHistory({});
   }, [params.boardId]);
 
+  const onWheel = useCallback((e: React.WheelEvent) => {
+    setCamera((camera) => ({
+      x: camera.x - e.deltaX, y: camera.y - e.deltaY
+    }))
+  }, [])
+
   const undo = useCallback(() => {
     if (!session?.user?.id) return;
     const userId = session?.user?.id ?? '';
@@ -147,7 +163,7 @@ export default function BoardPage() {
     const userId = session.user.id;
     const currentUserRedoHistory = userRedoHistory[userId] || [];
     if (currentUserRedoHistory.length === 0) return;
-  
+
     const lastRedo = currentUserRedoHistory[currentUserRedoHistory.length - 1];
     setUserRedoHistory(prev => ({
       ...prev,
@@ -158,7 +174,7 @@ export default function BoardPage() {
       ...prev,
       [userId]: [...(prev[userId] || []), lastRedo],
     }));
-  
+
     // 서버에 redo 기록 업데이트 요청
     fetch(`/api/boards/${params.boardId}/drawings/${lastRedo.id}`, {
       method: 'PUT',
@@ -173,18 +189,50 @@ export default function BoardPage() {
     }).catch(error => {
       console.error('redo 기록 저장 실패:', error);
     });
-  
+
     if (socketRef.current) {
       socketRef.current.emit('redo', { boardId: params.boardId, userId });
     }
   }, [userRedoHistory, params.boardId, session?.user?.id]);
-  
-  
-  const startDrawing = (event: React.PointerEvent<SVGSVGElement>) => {
-    console.log('startDrawing 함수 호출됨'); // 디버깅용
-    console.log('현재 모드:', canvasState); // 디버깅용
-    if (canvasState !== CanvasMode.Pencil) return;
 
+  const handlePointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
+    if (canvasState.mode === CanvasMode.Pencil) {
+      startDrawing(event); // 드로잉 모드일 때 그리기 시작
+    } else if (canvasState.mode === CanvasMode.SelectionNet) {
+      // 선택 모드일 때 객체 선택
+      const svg = svgRef.current;
+      if (!svg) return;
+      const point = svg.createSVGPoint();
+      point.x = event.clientX;
+      point.y = event.clientY;
+      const transformedPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
+
+      // 드로잉 기록에서 해당 좌표에 포함되는 객체 찾기
+      for (const draw of drawHistory) {
+        const { x, y, width, height } = draw.bounds;
+        if (
+          transformedPoint.x >= x &&
+          transformedPoint.x <= x + width &&
+          transformedPoint.y >= y &&
+          transformedPoint.y <= y + height
+        ) {
+          setSelectedLayerId(draw.id);
+          setCanvasState({ mode: CanvasMode.Translating });
+          return;
+        }
+      }
+      setSelectedLayerId(null);
+    } else if (canvasState.mode === CanvasMode.Pressing) {
+      setCanvasState(prevState => ({
+        ...prevState,
+        origin: { x: event.clientX, y: event.clientY },
+        current: { x: event.clientX, y: event.clientY },
+        mode: CanvasMode.Pressing
+      }));
+    }
+  };
+
+  const startDrawing = (event: React.PointerEvent<SVGSVGElement>) => {
     setIsDrawing(true);
     const svg = svgRef.current;
     if (!svg) return;
@@ -194,12 +242,11 @@ export default function BoardPage() {
     point.y = event.clientY;
     const transformedPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
 
-    console.log('드로잉 시작 지점:', transformedPoint); // 디버깅용
-    setPath([{ x: transformedPoint.x, y: transformedPoint.y }]);
+    setPath([{ x: transformedPoint.x - camera.x, y: transformedPoint.y - camera.y }]);
   };
 
   const draw = (event: React.PointerEvent<SVGSVGElement>) => {
-    if (canvasState === CanvasMode.Pencil && isDrawing) {
+    if (isDrawing && canvasState.mode === CanvasMode.Pencil) {
       const svg = svgRef.current;
       if (!svg) return;
 
@@ -208,30 +255,22 @@ export default function BoardPage() {
       point.y = event.clientY;
       const transformedPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
 
-      console.log('드로잉 중, 현재 점:', transformedPoint);
-      setPath(prevPath => [...prevPath, { x: transformedPoint.x, y: transformedPoint.y }]);
-    } else if (canvasState === CanvasMode.Translating) {
-      translateObject(event);
+      setPath(prevPath => [...prevPath, { x: transformedPoint.x - camera.x, y: transformedPoint.y - camera.y }]);
     }
   };
 
   const stopDrawing = () => {
-    if (!session) {
-      toast.info('로그인이 필요합니다.');
-      router.push('/');
-      return;
-    }
-    console.log('stopDrawing 함수 호출됨'); // 디버깅용
-    if (canvasState !== CanvasMode.Pencil || !isDrawing) return;
+    if (!session) return;
+    if (canvasState.mode !== CanvasMode.Pencil || !isDrawing) return;
 
     if (path.length > 0) {
-      const newDraw: Omit<DrawHistory, 'id'> = {
+      const newDraw = {
         path,
         color,
         boardId: params.boardId as string,
         userId: session?.user?.id || '',
         createdAt: new Date(),
-        bounds: { x: path[0].x, y: path[0].y, width: 100, height: 100 }, // 임시로 bounds 설정
+        bounds: { x: path[0].x, y: path[0].y, width: 100, height: 100 },
       };
 
       fetch(`/api/boards/${params.boardId}`, {
@@ -247,7 +286,7 @@ export default function BoardPage() {
             ...prev,
             [session.user.id]: [...(prev[session.user.id] || []), { ...newDraw, id: data.id }],
           }));
-          setUserRedoHistory(prev => ({ ...prev, [session.user.id]: [] })); // 새로 그린 경우 redo 히스토리 초기화
+          setUserRedoHistory(prev => ({ ...prev, [session.user.id]: [] }));
         })
         .catch(error => {
           console.error('그리기 기록 저장 실패:', error);
@@ -257,66 +296,21 @@ export default function BoardPage() {
     setIsDrawing(false);
   };
 
-  const selectObject = (event: React.PointerEvent<SVGSVGElement>) => {
-    console.log('selectObject 함수 호출됨');
-    console.log('현재 모드:', canvasState);
-    if (canvasState !== CanvasMode.None) return;
 
-    const svg = svgRef.current;
-    if (!svg) return;
-
-    const point = svg.createSVGPoint();
-    point.x = event.clientX;
-    point.y = event.clientY;
-    const transformedPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
-
-    console.log('선택한 지점:', transformedPoint);
-
-    const selected = drawHistory.find(draw => {
-      return (
-        transformedPoint.x >= draw.bounds.x &&
-        transformedPoint.x <= draw.bounds.x + draw.bounds.width &&
-        transformedPoint.y >= draw.bounds.y &&
-        transformedPoint.y <= draw.bounds.y + draw.bounds.height
-      );
-    });
-
-    if (selected) {
-      console.log('선택된 객체:', selected);
-      setSelectedLayer(selected);
-      setCanvasState(CanvasMode.Translating);
-    }
-  };
-
-  const translateObject = useCallback((event: React.PointerEvent<SVGSVGElement>) => {
-    console.log('translateObject 함수 호출됨');
-    console.log('현재 모드:', canvasState);
-    if (canvasState !== CanvasMode.Translating || !selectedLayer) return;
-
-    const svg = svgRef.current;
-    if (!svg) return;
-
-    const point = svg.createSVGPoint();
-    point.x = event.clientX;
-    point.y = event.clientY;
-    const transformedPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
-
-    const deltaX = transformedPoint.x - selectedLayer.bounds.x;
-    const deltaY = transformedPoint.y - selectedLayer.bounds.y;
-
-    const updatedLayer = {
-      ...selectedLayer,
-      bounds: {
-        ...selectedLayer.bounds,
-        x: selectedLayer.bounds.x + deltaX,
-        y: selectedLayer.bounds.y + deltaY,
-      }
-    };
-
-    setSelectedLayer(updatedLayer);
-    setDrawHistory((prev: DrawHistory[]) => prev.map(layer => (layer.id === updatedLayer.id ? updatedLayer : layer)));
-    setCanvasState(CanvasMode.None);
-  }, [canvasState, selectedLayer]);
+  const onResizeHandlePointerDown = useCallback((
+    corner: Side, initialBounds: XYWH
+  ) => {
+    setCanvasState(prevState => ({
+      ...prevState,
+      mode: CanvasMode.Resizing,
+      initialBounds,
+      corner
+    }));
+  }, []);
+  // {canvasState.mode === CanvasMode.SelectionNet && canvasState.current != null && canvasState.origin != null 
+  console.log(canvasState.current)
+  console.log(canvasState.origin)
+  console.log(canvasState.mode)
 
   return (
     <main className="h-screen w-full relative bg-neutral-100 touch-none">
@@ -333,30 +327,44 @@ export default function BoardPage() {
       <svg
         ref={svgRef}
         className="h-full w-full"
-        onPointerDown={startDrawing}
+        onPointerDown={handlePointerDown}
         onPointerMove={draw}
         onPointerUp={stopDrawing}
-        onMouseDown={selectObject} // 선택 모드 동작
-        onWheel={event => setCamera({ x: camera.x + event.deltaX, y: camera.y + event.deltaY })}
-        viewBox={`${camera.x} ${camera.y} 1200 1200`}
+        onWheel={onWheel}
       >
-        {drawHistory.map((draw, index) => (
-          <path
-            key={index}
-            d={`M ${draw.path.map(p => `${p.x},${p.y}`).join(' ')}`}
-            stroke={draw.color}
-            strokeWidth="2"
-            fill="none"
-          />
-        ))}
-        {isDrawing && (
-          <path
-            d={`M ${path.map(p => `${p.x},${p.y}`).join(' ')}`}
-            stroke={color}
-            strokeWidth="2"
-            fill="none"
-          />
-        )}
+        <g style={{ transform: `translate(${camera.x}px, ${camera.y}px)` }}>
+          {drawHistory.map((draw, index) => (
+            <path
+              key={index}
+              d={`M ${draw.path.map(p => `${p.x},${p.y}`).join(' ')}`}
+              stroke={draw.color}
+              strokeWidth="2"
+              fill="none"
+            />
+          ))}
+          {isDrawing && (
+            <path
+              d={`M ${path.map(p => `${p.x},${p.y}`).join(' ')}`}
+              stroke={color}
+              strokeWidth="2"
+              fill="none"
+            />
+          )}
+          {selectedLayerId && (
+            <SelectionBox
+              selectedLayerId={selectedLayerId}
+              layers={new Map(drawHistory.map(draw => [draw.id, draw]))}
+              onResizeHandlePointerDown={onResizeHandlePointerDown}
+            />
+          )}
+          {canvasState.mode === CanvasMode.SelectionNet && canvasState.current != null && canvasState.origin != null && (
+            <rect className="fill-blue-500/5 stroke-blue-500 stroke-1"
+              x={Math.min(canvasState.origin.x, canvasState.current.x)}
+              y={Math.min(canvasState.origin.y, canvasState.current.y)}
+              width={Math.abs(canvasState.origin.x - canvasState.current.x)}
+              height={Math.abs(canvasState.origin.y - canvasState.current.y)} />
+          )}
+        </g>
       </svg>
     </main>
   );
