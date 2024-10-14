@@ -20,14 +20,20 @@ import {
 } from '@/types/draw-types';
 import { SelectionBox } from './_components/selection-box';
 
+interface UndoRedoHistory {
+  type: 'move' | 'draw';
+  movedLayers: DrawHistory[];
+  previousState: (DrawHistory | undefined)[];
+}
+
 export default function BoardPage() {
   const { data: sessionData, status } = useSession();
   const session = sessionData as Session | null;
   const params = useParams();
   const router = useRouter();
   const [drawHistory, setDrawHistory] = useState<DrawHistory[]>([]);
-  const [userDrawHistory, setUserDrawHistory] = useState<{ [userId: string]: DrawHistory[] }>({});
-  const [userRedoHistory, setUserRedoHistory] = useState<{ [userId: string]: DrawHistory[] }>({});
+  const [userDrawHistory, setUserDrawHistory] = useState<{ [userId: string]: (DrawHistory | UndoRedoHistory)[] }>({});
+  const [userRedoHistory, setUserRedoHistory] = useState<{ [userId: string]: (DrawHistory | UndoRedoHistory)[] }>({});
   const [canvasState, setCanvasState] = useState<CanvasState>({ mode: CanvasMode.None });
   const [path, setPath] = useState<Point[]>([]);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -92,76 +98,93 @@ export default function BoardPage() {
 
   const undo = useCallback(() => {
     if (!session?.user?.id) return;
-    const userId = session?.user?.id ?? '';
-    const currentUserDrawHistory = userDrawHistory[userId] || [];
-    if (currentUserDrawHistory.length === 0) return;
-
-    const lastDraw = currentUserDrawHistory[currentUserDrawHistory.length - 1];
-    const newDrawHistory = drawHistory.filter(draw => draw.id !== lastDraw.id);
-
-    setDrawHistory(newDrawHistory);
-    setUserDrawHistory(prev => ({
-      ...prev,
-      [userId]: currentUserDrawHistory.slice(0, -1),
-    }));
-    setUserRedoHistory(prev => ({
-      ...prev,
-      [userId]: [...(prev[userId] || []), lastDraw],
-    }));
-
-    fetch(`/api/boards/${params.boardId}/drawings/${lastDraw.id}`, {
-      method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    }).then(response => {
-      if (!response.ok) {
-        console.error('그리기 기록 삭제 실패:', response.statusText);
+    const userId = session.user.id;
+  
+    setUserDrawHistory((prevUserDrawHistory) => {
+      const currentUserDrawHistory = prevUserDrawHistory[userId] || [];
+      if (currentUserDrawHistory.length === 0) return prevUserDrawHistory;
+  
+      const lastAction = currentUserDrawHistory[currentUserDrawHistory.length - 1];
+      if (!lastAction) return prevUserDrawHistory;
+  
+      if ('type' in lastAction && lastAction.type === 'move') {
+        setDrawHistory((prevDrawHistory) =>
+          prevDrawHistory.map((layer) => {
+            const prevState = lastAction.previousState.find((prevLayer) => prevLayer?.id === layer.id);
+            return prevState ? { ...layer, ...prevState } : layer;
+          })
+        );
       }
-    }).catch(error => {
-      console.error('그리기 기록 삭제 실패:', error);
+  
+      if (!('type' in lastAction)) {
+        setDrawHistory((prevDrawHistory) =>
+          prevDrawHistory.filter((draw) => draw.id !== lastAction.id)
+        );
+      }
+  
+      // 선택된 레이어 상태 유지
+      setSelectedLayerIds((prevSelectedLayerIds) => {
+        return prevSelectedLayerIds.filter(id => drawHistory.some(draw => draw.id === id));
+      });
+  
+      setUserRedoHistory((prevUserRedoHistory) => ({
+        ...prevUserRedoHistory,
+        [userId]: [...(prevUserRedoHistory[userId] || []), lastAction],
+      }));
+  
+      return {
+        ...prevUserDrawHistory,
+        [userId]: currentUserDrawHistory.slice(0, -1),
+      };
     });
-
+  
     if (socketRef.current) {
-      socketRef.current.emit('undo', { boardId: params.boardId, userId });
+      socketRef.current.emit("undo", { boardId: params.boardId, userId });
     }
-  }, [drawHistory, userDrawHistory, params.boardId, session?.user?.id]);
-
+  }, [session, drawHistory, params.boardId]);
+  
   const redo = useCallback(() => {
     if (!session?.user?.id) return;
     const userId = session.user.id;
-    const currentUserRedoHistory = userRedoHistory[userId] || [];
-    if (currentUserRedoHistory.length === 0) return;
-
-    const lastRedo = currentUserRedoHistory[currentUserRedoHistory.length - 1];
-    setUserRedoHistory(prev => ({
-      ...prev,
-      [userId]: prev[userId].slice(0, -1),
-    }));
-    setDrawHistory(prev => [...prev, lastRedo]);
-    setUserDrawHistory(prev => ({
-      ...prev,
-      [userId]: [...(prev[userId] || []), lastRedo],
-    }));
-
-    fetch(`/api/boards/${params.boardId}/drawings/${lastRedo.id}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(lastRedo),
-    }).then(response => {
-      if (!response.ok) {
-        console.error('redo 기록 저장 실패:', response.statusText);
+  
+    setUserRedoHistory((prevUserRedoHistory) => {
+      const currentUserRedoHistory = prevUserRedoHistory[userId] || [];
+      if (currentUserRedoHistory.length === 0) return prevUserRedoHistory;
+  
+      const lastRedo = currentUserRedoHistory[currentUserRedoHistory.length - 1];
+      if (!lastRedo) return prevUserRedoHistory;
+  
+      if ('type' in lastRedo && lastRedo.type === 'move') {
+        setDrawHistory((prevDrawHistory) =>
+          prevDrawHistory.map((layer) => {
+            const movedLayer = lastRedo.movedLayers.find((moved) => moved.id === layer.id);
+            return movedLayer ? { ...layer, ...movedLayer } : layer;
+          })
+        );
       }
-    }).catch(error => {
-      console.error('redo 기록 저장 실패:', error);
+  
+      if (!('type' in lastRedo)) {
+        setDrawHistory((prevDrawHistory) => [...prevDrawHistory, lastRedo]);
+      }
+  
+      setUserDrawHistory((prevUserDrawHistory) => ({
+        ...prevUserDrawHistory,
+        [userId]: [...(prevUserDrawHistory[userId] || []), lastRedo],
+      }));
+  
+      return {
+        ...prevUserRedoHistory,
+        [userId]: currentUserRedoHistory.slice(0, -1),
+      };
     });
-
+  
     if (socketRef.current) {
-      socketRef.current.emit('redo', { boardId: params.boardId, userId });
+      socketRef.current.emit("redo", { boardId: params.boardId, userId });
     }
-  }, [userRedoHistory, params.boardId, session?.user?.id]);
+  }, [params.boardId, session?.user?.id]);
+  
+
+
 
   const startDrawing = (event: React.PointerEvent<SVGSVGElement>) => {
     if (canvasState.mode !== CanvasMode.Pencil) return;  // Pencil 모드일 때만 실행
@@ -194,13 +217,13 @@ export default function BoardPage() {
   const stopDrawing = () => {
     if (!session || !isDrawing) return;
     if (canvasState.mode !== CanvasMode.Pencil) return;
-
+  
     if (path.length > 0) {
       const minX = Math.min(...path.map(p => p.x));
       const minY = Math.min(...path.map(p => p.y));
       const maxX = Math.max(...path.map(p => p.x));
       const maxY = Math.max(...path.map(p => p.y));
-
+  
       const newDraw = {
         path,
         color,
@@ -210,11 +233,16 @@ export default function BoardPage() {
         bounds: {
           x: minX,
           y: minY,
-          width: maxX - minX, // 정확한 width 계산
-          height: maxY - minY, // 정확한 height 계산
+          width: maxX - minX,  // 정확한 width 계산
+          height: maxY - minY,  // 정확한 height 계산
         },
       };
-
+  
+      // 서버로 draw 이벤트 전송
+      if (socketRef.current) {
+        socketRef.current.emit("draw", newDraw);
+      }
+  
       fetch(`/api/boards/${params.boardId}`, {
         method: 'POST',
         headers: {
@@ -235,10 +263,11 @@ export default function BoardPage() {
           console.error('그리기 기록 저장 실패:', error);
         });
     }
-
+  
     setPath([]);
     setIsDrawing(false);
   };
+  
 
   const handlePointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
     const svg = svgRef.current;
@@ -293,17 +322,17 @@ export default function BoardPage() {
   const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
     const svg = svgRef.current;
     if (!svg) return;
-  
+
     const point = svg.createSVGPoint();
     point.x = event.clientX;
     point.y = event.clientY;
     const transformedPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
-  
+
     if (isDragging && canvasState.mode === CanvasMode.Translating && dragStart) {
       // 이동 거리 계산
       const deltaX = transformedPoint.x - dragStart.x;
       const deltaY = transformedPoint.y - dragStart.y;
-  
+
       // 선택된 물체의 좌표를 업데이트 (path와 bounds를 모두 업데이트)
       setDrawHistory((prev) =>
         prev.map((layer) => {
@@ -338,7 +367,7 @@ export default function BoardPage() {
           return layer;
         })
       );
-  
+
       // 드래그 시작점을 갱신하여 매번 업데이트된 위치를 기준으로 이동
       setDragStart({ x: transformedPoint.x, y: transformedPoint.y });
     } else if (canvasState.mode === CanvasMode.SelectionNet && canvasState.origin) {
@@ -351,19 +380,54 @@ export default function BoardPage() {
       draw(event); // Pencil 모드일 때 드로잉 처리
     }
   };
-  
+
   // PointerUp에서 드래그 종료
   const handlePointerUp = (event: React.PointerEvent<SVGSVGElement>) => {
     if (canvasState.mode === CanvasMode.Pencil && isDrawing) {
       stopDrawing(); // 마우스를 떼면 드로잉을 멈춤
     }
-  
-    if (isDragging && canvasState.mode === CanvasMode.Translating) {      
-      // 물체 이동이 완료되면 드래그 상태 초기화
+
+    if (isDragging && canvasState.mode === CanvasMode.Translating) {
+      const movedLayers = drawHistory.filter((layer) => selectedLayerIds.includes(layer.id));
+      const previousState = selectedLayerIds.map(id => drawHistory.find(layer => layer.id === id));
+
+      if (dragStart && movedLayers.length > 0) {
+        movedLayers.forEach((layer) => {
+          fetch(`/api/boards/${params.boardId}/drawings/${layer.id}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(layer),
+          });
+        });
+
+        // 여기서 선택 관련 기록을 저장하지 않음
+        setUserDrawHistory((prev) => ({
+          ...prev,
+          [session?.user?.id || '']: [
+            ...(prev[session?.user?.id || ''] || []),
+            { type: 'move', movedLayers, previousState },
+          ],
+        }));
+
+        if (socketRef.current) {
+          socketRef.current.emit('move', {
+            boardId: params.boardId,
+            movedLayers,
+          });
+        }
+      }
+
       setIsDragging(false);
       setDragStart(null);
-      setDragOffset(null);
-      setCanvasState({ mode: CanvasMode.None });  // 이동 후 기본 모드로 전환
+      setCanvasState({ mode: CanvasMode.None });
+    }
+
+    // 물체 선택은 undo 히스토리에 추가되지 않도록 함
+    if (canvasState.mode === CanvasMode.SelectionNet) {
+      setIsDragging(false);
+      setCanvasState({ mode: CanvasMode.None });
     }
 
     if (isDragging && canvasState.mode === CanvasMode.SelectionNet && canvasState.origin && canvasState.current) {
@@ -407,6 +471,11 @@ export default function BoardPage() {
     setIsDragging(false);  // 드래그가 끝났으므로 상태 초기화
   };
 
+  const handlePointerLeave = (event: React.PointerEvent<SVGSVGElement>) => {
+    setIsDragging(false); // 드래그 중이라면 드래그를 멈춤
+    setCanvasState({ mode: CanvasMode.None }); // 캔버스 상태 초기화
+    setSelectedLayerIds([]); // 선택된 레이어 초기화
+  };
 
   const onResizeHandlePointerDown = useCallback((
     corner: Side, initialBounds: XYWH
@@ -436,6 +505,7 @@ export default function BoardPage() {
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerLeave}
         onWheel={onWheel}
       >
         <g style={{ transform: `translate(${camera.x}px, ${camera.y}px)` }}>
